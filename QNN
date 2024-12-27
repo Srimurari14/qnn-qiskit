@@ -1,0 +1,241 @@
+import numpy as np
+
+# Importing standard Qiskit libraries
+from qiskit import QuantumCircuit, transpile, Aer, IBMQ
+from qiskit.tools.jupyter import *
+from qiskit.visualization import *
+from ibm_quantum_widgets import *
+from qiskit.providers.aer import QasmSimulator
+
+# Loading your IBM Quantum account(s)
+provider = IBMQ.load_account()
+
+#installing ML libraries
+!pip install kaggle
+!pip install Keras
+!pip install numpy
+!pip install opencv-python
+!pip install pandas
+!pip install -U scikit-learn
+!pip install seaborn
+!pip install tensorflow
+!pip install tqdm
+!pip install sklearn
+!pip install pennylane
+
+#importing libraries
+
+%matplotlib inline
+from keras.layers import Activation
+from keras.layers import AveragePooling2D
+from keras import backend
+from keras.layers import BatchNormalization
+from keras.layers import Concatenate
+from keras.layers import Conv2D
+import cv2
+from keras.utils import data_utils
+from keras.layers import Dense
+from keras.layers import Dropout
+from keras.layers import GlobalAveragePooling2D
+from tensorflow.keras.utils import load_img
+from keras.preprocessing.image import ImageDataGenerator
+from keras.applications import imagenet_utils
+from tensorflow.keras.utils import img_to_array
+from keras.layers import Input
+from skimage import io
+from keras.models import load_model
+from keras.layers import MaxPooling2D
+from keras.models import Model
+from keras.callbacks import ModelCheckpoint
+from keras.callbacks import ReduceLROnPlateau
+import numpy as np
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import tensorflow as tf
+from keras.utils.np_utils import to_categorical
+from tqdm import tqdm
+from keras.layers import ZeroPadding2D
+import pennylane as qml
+from pennylane import numpy as np
+from pennylane.templates import RandomLayers
+import tensorflow as tf
+from tensorflow import keras
+import matplotlib.pyplot as plt
+
+# Importing data
+
+!mkdir ~/.kaggle
+!echo '{"username":"","key":""}' > ~/.kaggle/kaggle.json
+!chmod 600 ~/.kaggle/kaggle.json
+!mkdir sarscov2-ctscan-dataset
+
+disease_types=['COVID', 'non-COVID']
+data_dir='sarscov2-ctscan-dataset'
+train_dir=os.path.join(data_dir)
+
+data_set = []
+for disease_id, disease_type in enumerate(disease_types):
+    for file_name in os.listdir(os.path.join(train_dir, disease_type)):
+        data_set.append(['{}/{}'.format(disease_type, file_name), disease_id, disease_type])
+        
+data = pd.DataFrame(data_set, columns=['File', 'Disease ID','Disease Type'])
+data.head()
+
+SEED = 50
+data = data.sample(frac=1, random_state=SEED) 
+data.index = np.arange(len(data)) # Reset indices
+
+#Read and Resize Image
+IMAGE_SIZE = 64
+def read_image(filepath):
+    return cv2.imread(os.path.join(data_dir, filepath)) # Loading a color image is the default flag
+
+# Resize image to target size
+def resize_image(image, image_size):
+    return cv2.resize(image.copy(), image_size, interpolation=cv2.INTER_AREA)
+
+X = np.zeros((data.shape[0], IMAGE_SIZE, IMAGE_SIZE, 3))
+
+for i, file in tqdm(enumerate(data['File'].values)):
+    image = read_image(file)
+    if image is not None:
+        X[i] = resize_image(image, (IMAGE_SIZE, IMAGE_SIZE))
+
+# Normalize the data
+X = X / 255.
+print('Train Shape: {}'.format(X.shape))
+
+Y = data['Disease ID'].values
+Y = to_categorical(Y, num_classes=2)
+
+X_train, X_test = np.split(X, [int(0.80 * len(X))])
+Y_train, Y_test = np.split(Y, [int(0.80 * len(Y))])
+
+len(X_train),len(X_test),len(Y_train),len(Y_test)
+
+# Reduce dataset size
+X_train = X_train[:1986]
+X_test = X_test[:497]
+Y_train = Y_train[:1986]
+Y_test = Y_test[:497]
+
+
+# Add extra dimension for convolution channels
+X_train = np.array(X_train[..., tf.newaxis])
+X_test = np.array(X_test[..., tf.newaxis])
+
+n_epochs = 50   # Number of optimization epochs
+n_layers = 3   # Number of random layers
+n_train = 1986    # Size of the train dataset
+n_test = 497     # Size of the test dataset
+
+PREPROCESS = True           # If False, skip quantum processing and load data from SAVE_PATH
+np.random.seed(0)           # Seed for NumPy random number generator
+tf.random.set_seed(0)       # Seed for TensorFlow random number generator
+
+def quanv(image):
+    """Convolves the input image with many applications of the same quantum circuit."""
+    out = np.zeros((64, 64, 3))
+
+    # Loop over the coordinates of the top-left pixel of 2X2 squares
+    for j in range(0, 28, 2):
+        for k in range(0, 28, 2):
+            # Process a squared 2x2 region of the image with a quantum circuit
+            q_results = circuit(
+                [
+                    image[j, k, 0],
+                    image[j, k + 1, 0],
+                    image[j + 1, k, 0],
+                    image[j + 1, k + 1, 0]
+                ]
+            )
+            # Assign expectation values to different channels of the output pixel (j/2, k/2)
+            for c in range(4):
+                out[j // 2, k // 2, c] = q_results[c]
+    return out
+
+
+dev = qml.device("default.qubit", wires=3)
+# Random circuit parameters
+rand_params = np.random.uniform(high=2 * np.pi, size=(n_layers, 3))
+
+@qml.qnode(dev)
+def circuit(phi):
+    # Encoding of 4 classical input values
+    for j in range(4):
+        qml.RY(np.pi * phi[j], wires=j)
+
+    # Random quantum circuit
+    RandomLayers(rand_params, wires=list(range(4)))
+
+    # Measurement producing 4 classical output values
+    return [qml.expval(qml.PauliZ(j)) for j in range(4)]
+
+if PREPROCESS == True:
+    q_train_images = []
+    print("Quantum pre-processing of train images:")
+    for idx, img in enumerate(X_train):
+        print("{}/{}        ".format(idx + 1, n_train), end="\r")
+        q_train_images.append(quanv(img))
+    q_train_images = np.asarray(q_train_images)
+
+    q_test_images = []
+    print("\nQuantum pre-processing of test images:")
+    for idx, img in enumerate(X_test):
+        print("{}/{}        ".format(idx + 1, n_test), end="\r")
+        q_test_images.append(quanv(img))
+    q_test_images = np.asarray(q_test_images)
+
+def MyModel6():
+    """Initializes and returns a custom Keras model
+    which is ready to be trained."""
+    model = keras.models.Sequential([
+        keras.layers.Flatten(),
+        keras.layers.Dense(2, activation="softmax")
+    ])
+
+    model.compile(
+        optimizer='adam',
+        loss="binary_crossentropy",
+        metrics=["accuracy"],
+    )
+    return model
+
+q_model6 = MyModel6()
+start=time.time()
+q_history6 = q_model6.fit(
+    q_train_images,
+    Y_train,
+    validation_data=(q_test_images,Y_test),
+    batch_size=5,
+    epochs=100,
+    verbose=2)
+stop=time.time()
+print(stop-start)
+
+#plots
+
+acc = q_history6.history['accuracy']
+val_acc = q_history6.history['val_accuracy']
+loss = q_history6.history['loss']
+val_loss = q_history6.history['val_loss']
+
+epochs = range(1, len(acc) + 1)
+
+plt.plot(epochs, acc, 'blue')
+plt.plot(epochs, val_acc, 'orange')
+plt.title('Training and validation accuracy')
+plt.ylabel('accuracy')
+plt.xlabel('epoch')
+plt.legend(['train','test'],loc='upper left')
+
+plt.figure()
+
+plt.plot(epochs, loss, 'blue')
+plt.plot(epochs, val_loss, 'orange')
+plt.title('Training and validation loss')
+plt.legend(['train','test'],loc='upper left')
+
+plt.show()
